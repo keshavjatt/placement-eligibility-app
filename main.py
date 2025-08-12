@@ -17,46 +17,236 @@ if menu == "Eligibility Checker":
     if st.button("Show All Students"):
         cursor.execute("SELECT * FROM tbl_students")
         rows = cursor.fetchall()
-        st.dataframe([dict(row) for row in rows])  # Convert sqlite3.Row to dict
-    
-    st.markdown("#### Filter Students")
-    age_filter = st.slider("Minimum Age", 18, 25, 20)
-    batch_filter = st.selectbox("Select Batch", ["Batch-1", "Batch-2", "Batch-3", "Batch-4", "Batch-5"])
-    
-    if st.button("Filter Students"):
-        cursor.execute("SELECT * FROM tbl_students WHERE age >= ? AND course_batch = ?", 
-                      (age_filter, batch_filter))
-        rows = cursor.fetchall()
         st.dataframe([dict(row) for row in rows])
+    
+    st.markdown("#### Advanced Filters")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        age_range = st.slider("Age Range", 18, 25, (20, 22))
+        gender_filter = st.multiselect(
+            "Gender",
+            options=['Male', 'Female'],
+            default=['Male', 'Female']
+        )
+        cursor.execute("SELECT DISTINCT city FROM tbl_students")
+        cities = [row['city'] for row in cursor.fetchall()]
+        city_filter = st.multiselect("City", options=cities)
+        
+    with col2:
+        batch_filter = st.multiselect(
+            "Batch",
+            options=['Batch-1', 'Batch-2', 'Batch-3', 'Batch-4', 'Batch-5'],
+            default=['Batch-1', 'Batch-2', 'Batch-3', 'Batch-4', 'Batch-5']
+        )
+        grad_year_filter = st.multiselect(
+            "Graduation Year",
+            options=[2023, 2024, 2025, 2026, 2027],
+            default=[2023, 2024, 2025, 2026, 2027]
+        )
+        problems_solved = st.slider(
+            "Minimum Problems Solved", 
+            min_value=0, 
+            max_value=200, 
+            value=50
+        )
+    
+    placement_filter = st.selectbox(
+        "Placement Status",
+        options=["All", "Placed", "Ready", "Not Ready"]
+    )
+    
+    if st.button("Apply Filters"):
+        query = """
+            SELECT s.*, p.placement_status, pr.problems_solved
+            FROM tbl_students s
+            LEFT JOIN tbl_placements p ON s.student_id = p.student_id
+            LEFT JOIN tbl_programming pr ON s.student_id = pr.student_id
+            WHERE 1=1
+        """
+        
+        params = []
+        query += " AND s.age BETWEEN ? AND ?"
+        params.extend([age_range[0], age_range[1]])
+        
+        if gender_filter:
+            query += " AND s.gender IN ({})".format(",".join(["?"]*len(gender_filter)))
+            params.extend(gender_filter)
+        
+        if city_filter:
+            query += " AND s.city IN ({})".format(",".join(["?"]*len(city_filter)))
+            params.extend(city_filter)
+        
+        if batch_filter:
+            query += " AND s.course_batch IN ({})".format(",".join(["?"]*len(batch_filter)))
+            params.extend(batch_filter)
+        
+        if grad_year_filter:
+            query += " AND s.graduation_year IN ({})".format(",".join(["?"]*len(grad_year_filter)))
+            params.extend(grad_year_filter)
+        
+        query += " AND pr.problems_solved >= ?"
+        params.append(problems_solved)
+        
+        if placement_filter != "All":
+            query += " AND p.placement_status = ?"
+            params.append(placement_filter)
+        
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        
+        if rows:
+            st.dataframe([dict(row) for row in rows])
+            st.success(f"Found {len(rows)} students matching your criteria")
+        else:
+            st.warning("No students found matching your criteria")
 
 # ------------------ INSIGHTS DASHBOARD -------------------
 elif menu == "Insights Dashboard":
     st.subheader("Placement Statistics")
     
-    tabs = st.tabs(["Students", "Programming", "Soft Skills", "Placements"])
+    # Question 1: Total placed students
+    st.markdown("### 1. Kitne students placed hain?")
+    cursor.execute("""
+        SELECT COUNT(*) as placed_count 
+        FROM tbl_placements 
+        WHERE placement_status = 'Placed'
+    """)
+    placed_count = cursor.fetchone()['placed_count']
+    cursor.execute("SELECT COUNT(*) as total FROM tbl_students")
+    total_count = cursor.fetchone()['total']
+    st.info(f"Total students: {total_count}")
+    st.info(f"Placed students: {placed_count} ({placed_count/total_count*100:.1f}%)")
     
-    with tabs[0]:
-        st.markdown("### All Students Data")
-        cursor.execute("SELECT * FROM tbl_students")
-        rows = cursor.fetchall()
-        st.dataframe([dict(row) for row in rows])
+    # Question 2: Placement by gender
+    st.markdown("### 2. Gender ke hisab se placement status?")
+    cursor.execute("""
+        SELECT 
+            s.gender,
+            COUNT(CASE WHEN p.placement_status = 'Placed' THEN 1 END) as placed,
+            COUNT(*) as total,
+            COUNT(CASE WHEN p.placement_status = 'Placed' THEN 1 END)*100.0/COUNT(*) as percentage
+        FROM tbl_students s
+        JOIN tbl_placements p ON s.student_id = p.student_id
+        GROUP BY s.gender
+    """)
+    gender_data = cursor.fetchall()
+    st.table([dict(row) for row in gender_data])
     
-    with tabs[1]:
-        st.markdown("### Programming Skills")
-        cursor.execute("SELECT * FROM tbl_programming WHERE problems_solved > 50")
-        rows = cursor.fetchall()
-        st.dataframe([dict(row) for row in rows])
+    # Question 3: Top programming languages
+    st.markdown("### 3. Sabse popular programming languages?")
+    cursor.execute("""
+        SELECT language, COUNT(*) as count 
+        FROM tbl_programming 
+        GROUP BY language 
+        ORDER BY count DESC
+    """)
+    lang_data = cursor.fetchall()
+    st.bar_chart({row['language']: row['count'] for row in lang_data})
     
-    with tabs[2]:
-        st.markdown("### Soft Skills")
-        cursor.execute("SELECT * FROM tbl_softskills WHERE communication > 70")
-        rows = cursor.fetchall()
-        st.dataframe([dict(row) for row in rows])
+    # Question 4: Average package by language
+    st.markdown("### 4. Programming language ke hisab se average package?")
+    cursor.execute("""
+        SELECT pr.language, AVG(pl.placement_package) as avg_package
+        FROM tbl_programming pr
+        JOIN tbl_placements pl ON pr.student_id = pl.student_id
+        WHERE pl.placement_status = 'Placed'
+        GROUP BY pr.language
+        ORDER BY avg_package DESC
+    """)
+    lang_pkg_data = cursor.fetchall()
+    st.table([dict(row) for row in lang_pkg_data])
     
-    with tabs[3]:
-        st.markdown("### Placement Status")
-        cursor.execute("SELECT * FROM tbl_placements")
-        rows = cursor.fetchall()
-        st.dataframe([dict(row) for row in rows])
+    # Question 5: City-wise placement
+    st.markdown("### 5. Konsi city se sabse jyada placements?")
+    cursor.execute("""
+        SELECT s.city, COUNT(*) as placements
+        FROM tbl_placements p
+        JOIN tbl_students s ON p.student_id = s.student_id
+        WHERE p.placement_status = 'Placed'
+        GROUP BY s.city
+        ORDER BY placements DESC
+        LIMIT 5
+    """)
+    city_data = cursor.fetchall()
+    st.table([dict(row) for row in city_data])
+    
+    # Question 6: Problems solved vs placement
+    st.markdown("### 6. Problems solved aur placement ka relation?")
+    cursor.execute("""
+        SELECT 
+            CASE 
+                WHEN pr.problems_solved >= 100 THEN '100+'
+                WHEN pr.problems_solved >= 50 THEN '50-99'
+                ELSE '0-49'
+            END as problem_range,
+            COUNT(CASE WHEN p.placement_status = 'Placed' THEN 1 END) as placed,
+            COUNT(*) as total,
+            AVG(p.placement_package) as avg_package
+        FROM tbl_programming pr
+        JOIN tbl_placements p ON pr.student_id = p.student_id
+        GROUP BY problem_range
+        ORDER BY problem_range
+    """)
+    problem_data = cursor.fetchall()
+    st.table([dict(row) for row in problem_data])
+    
+    # Question 7: Top students by project score
+    st.markdown("### 7. Top 5 students by project score?")
+    cursor.execute("""
+        SELECT s.name, pr.latest_project_score
+        FROM tbl_programming pr
+        JOIN tbl_students s ON pr.student_id = s.student_id
+        ORDER BY pr.latest_project_score DESC
+        LIMIT 5
+    """)
+    top_students = cursor.fetchall()
+    st.table([dict(row) for row in top_students])
+    
+    # Question 8: Internships vs placement
+    st.markdown("### 8. Internships aur placement ka relation?")
+    cursor.execute("""
+        SELECT 
+            internships_completed,
+            COUNT(CASE WHEN placement_status = 'Placed' THEN 1 END) as placed,
+            COUNT(*) as total
+        FROM tbl_placements
+        GROUP BY internships_completed
+        ORDER BY internships_completed
+    """)
+    internship_data = cursor.fetchall()
+    st.table([dict(row) for row in internship_data])
+    
+    # Question 9: Soft skills comparison
+    st.markdown("### 9. Placed vs non-placed students ki soft skills?")
+    cursor.execute("""
+        SELECT 
+            p.placement_status,
+            AVG(s.communication) as avg_communication,
+            AVG(s.teamwork) as avg_teamwork,
+            AVG(s.presentation) as avg_presentation
+        FROM tbl_softskills s
+        JOIN tbl_placements p ON s.student_id = p.student_id
+        GROUP BY p.placement_status
+    """)
+    skill_data = cursor.fetchall()
+    st.table([dict(row) for row in skill_data])
+    
+    # Question 10: Batch-wise performance
+    st.markdown("### 10. Batch ke hisab se placement status?")
+    cursor.execute("""
+        SELECT 
+            s.course_batch,
+            COUNT(CASE WHEN p.placement_status = 'Placed' THEN 1 END) as placed,
+            COUNT(*) as total,
+            AVG(p.placement_package) as avg_package
+        FROM tbl_students s
+        JOIN tbl_placements p ON s.student_id = p.student_id
+        GROUP BY s.course_batch
+        ORDER BY s.course_batch
+    """)
+    batch_data = cursor.fetchall()
+    st.table([dict(row) for row in batch_data])
 
 conn.close()
